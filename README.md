@@ -1,6 +1,7 @@
 ## phpDaemon:
 
-http://github.com/kakserpom/phpdaemon
+Initial author: http://github.com/kakserpom/phpdaemon
+PHP 5.3-fork: http://github.com/max-shamave/phpdaemon
 
 True async. framework with API for PHP. It has many features. Designed for highload.
 Main features and possibilites:
