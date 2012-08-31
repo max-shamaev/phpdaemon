@@ -12,7 +12,6 @@ class AppInstance {
 	public $status = 0;        // runtime status
 	public $passphrase;        // optional passphrase
 	public $reqCounter = 0;    // counter of requests
-	public $queue = array();   // queue of requests
 	public $ready = FALSE;     // ready to start?
 	public $name;              // name of instance
 	public $config;
@@ -25,9 +24,9 @@ class AppInstance {
 		$this->name = $name;
 		
 		$appName = get_class($this);
-		Daemon::$process->log($appName . ($name ? "-{$name}" : '') . ' instantiated.');
 		$appNameLower = strtolower($appName);
 		$fullname = Daemon::$appResolver->getAppFullName($appName, $this->name);
+		//Daemon::$process->log($fullname . ' instantiated.');
 		if (!isset(Daemon::$appInstances[$appNameLower])) {
 			Daemon::$appInstances[$appNameLower] = array();
 		}
@@ -47,7 +46,7 @@ class AppInstance {
 		}
 
 		$this->config = Daemon::$config->{$fullname};
-		if(isset($this->config->enable->value) && $this->config->enable->value) {
+		if ($this->isEnabled()) {
 			Daemon::$process->log($appName . ($name ? "-{$name}" : '') . ' up.');
 		}
 
@@ -65,7 +64,14 @@ class AppInstance {
 			}
 		}
 	}
-
+	
+	public static function getInstance($name) {
+		return Daemon::$appResolver->getInstanceByAppName(get_called_class(), $name);
+	}
+	
+	public function isEnabled() {
+		return isset($this->config->enable->value) && $this->config->enable->value;
+	}
 	/**
 	 * Function to get default config options from application
 	 * Override to set your own
@@ -90,7 +96,7 @@ class AppInstance {
 	
 	
 	/**
-	 * Send broadcast call.
+	 * Send broadcast RPC.
 	 * You can override it
 	 * @param string Method name.
 	 * @param array Arguments.
@@ -98,7 +104,7 @@ class AppInstance {
 	 * @return boolean Success.
 	 */
 	public function broadcastCall($method, $args = array(), $cb = NULL) {
-		return Daemon::$process->IPCManager->broadcastCall(
+		return Daemon::$process->IPCManager->sendBroadcastCall(
 					get_class($this) . ($this->name !== '' ? '-' . $this->name : ''),
 					$method,
 					$args,
@@ -156,10 +162,9 @@ class AppInstance {
 	/**
 	 * Called when worker is going to update configuration
 	 * @todo call it only when application section config is changed
-	 * @todo rename to onConfigChanged()
 	 * @return void
 	 */
-	public function update() {}
+	public function onConfigUpdated() {}
  
 	/**
 	 * Called when application instance is going to shutdown
@@ -211,18 +216,6 @@ class AppInstance {
 	 * @return void
 	 */
 	public function shutdown($graceful = false) {
-		if (Daemon::$config->logevents->value) {
-			Daemon::log(__METHOD__ . ' invoked. Size of the queue: ' . sizeof($this->queue) . '.');
-		}
-
-		foreach ($this->queue as &$r) {
-			if ($r instanceof stdClass) {
-				continue;
-			}
-			
-			$r->finish();
-		}
-
 		return $this->onShutdown();
 	}
  
@@ -265,7 +258,7 @@ class AppInstance {
 	public function handleStatus($ret) {
 		if ($ret === 2) {
 			// script update
-			$r = $this->update();
+			$r = $this->onConfigUpdated();
 		}
 		elseif ($ret === 3) {
 			 // graceful worker shutdown for restart

@@ -11,7 +11,6 @@
 class Daemon_Config implements ArrayAccess {
 
 	// Worker graceful restarting:
-	public $maxrequests    = '1k';
 	public $maxmemoryusage = '0b';
 	public $maxidle        = '0s';
 			
@@ -24,7 +23,7 @@ class Daemon_Config implements ArrayAccess {
 	public $autoload   	 	= NULL;
 			
 	// Master-related
-	public $mpmdelay        = '1s';
+	public $mpmdelay        = '0.1s';
 	public $startworkers    = 20;
 	public $minworkers      = 20;
 	public $maxworkers      = 80;
@@ -59,14 +58,24 @@ class Daemon_Config implements ArrayAccess {
 	public $logreads           = 0;
 	public $logsignals         = 0;
 	
+	// eio
+	public $eiosetmaxidle = null;
+	public $eiosetmaxparallel = null;
+	public $eiosetmaxpollreqs = null;
+	public $eiosetmaxpolltime = null;
+	public $eiosetminparallel = null;
+	
 	public static $lastRevision = 0;
 	
 	// @todo phpdoc missed
 	
 	public function __construct() {
 		static $sizes = array('maxmemoryusage');
-		static $times = array('maxidle', 'autoreload', 'mpmdelay');
-		static $numbers = array('maxrequests', 'autogc','minworkers','maxworkers','minspareworkers','maxspareworkers','masterpriority');
+		static $times = array('maxidle', 'autoreload', 'mpmdelay', 'eiosetmaxpolltime');
+		static $numbers = array(
+			'maxrequests', 'autogc','minworkers','maxworkers','minspareworkers','maxspareworkers','masterpriority',
+			'eiosetmaxidle', 'eiosetmaxparallel', 'eiosetmaxpollreqs', 'eiosetminparallel',
+		);
 
 		foreach ($this as $name => $value) {
 			if (in_array($name, $sizes)) {
@@ -97,7 +106,29 @@ class Daemon_Config implements ArrayAccess {
 				Daemon::$process->updatedWorkers();
 			}
 		}
+		$this->onLoad();
 		return !$parser->errorneus;
+	}
+	
+	public function onLoad() {
+		if (
+			isset($this->minspareworkers->value) 
+			&& isset($this->maxspareworkers->value)
+		) {
+			if ($this->minspareworkers->value > $this->maxspareworkers->value) {
+				Daemon::log('\'minspareworkers\' cannot be greater than \'maxspareworkers\'.');
+				$this->minspareworkers->value = $this->maxspareworkers->value;
+			}
+		}
+		
+		if (
+			isset($this->minworkers->value) 
+			&& isset($this->maxworkers->value)
+		) {
+			if ($this->minworkers->value > $this->maxworkers->value) {
+				$this->minworkers->value = $this->maxworkers->value;
+			}
+		}
 	}
 
 	public function getRealOffsetName($offset) {

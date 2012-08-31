@@ -24,25 +24,31 @@ ini_set('include_path', get_include_path()
 );
 
 spl_autoload_register(function($classname) {
+	
 	$parts = explode('\\', $classname);
-	if (sizeof($parts) > 1) {
+	if (sizeof($parts) > 1 && ('PHPDaemon' == $parts[0])) {
 		// namespaces support (remove first "PHPDaemon\" part)
 		array_shift($parts);
 	}
 
-	$pathes = array('lib/' . implode('/', $parts) . '.php', 'lib/' . implode('/', $parts) . '.class.php');
+	$pathes = array('lib/' . implode('/', $parts) . '.php', 'lib/' . implode('/', $parts));
 	
 	foreach ($pathes as $path) {
-		if (@include($path)) {
+		if (file_exists($path)) {
+			require $path;
+			return;
+		}
+	}
+	if (class_exists('Daemon', false) && isset(Daemon::$config->autoload->value)) {
+		$files = glob(sprintf(Daemon::$config->autoload->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
+		if (isset($files[0])) {
+			require $files[0];
 			return;
 		}
 	}
 	
-	if (
-		class_exists('Daemon', false) 
-		&& isset(Daemon::$config->autoload->value)
-	) {
-		$files = glob($g = sprintf(Daemon::$config->autoload->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
+	if (class_exists('Daemon', false) && isset(Daemon::$config->appfilepath->value)) {
+		$files = glob($g = sprintf(Daemon::$config->appfilepath->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
 		if (isset($files[0])) {
 			require $files[0];
 			return;
@@ -52,5 +58,19 @@ spl_autoload_register(function($classname) {
 });
 
 require 'lib/BinarySubstr.php';
+$e = null;
+execute:
+try {
+	if ($e) {
+		$thread = $e->thread;
+	    $e = null;
+		$thread->run();
+		$thread->shutdown();
+	}
+	else {
+	    Daemon_Bootstrap::init();
+	}
+} catch (ClearStackException $e) {
+    goto execute;
+}
 
-Daemon_Bootstrap::init();

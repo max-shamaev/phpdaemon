@@ -29,7 +29,7 @@ class Daemon_ConfigParser {
 	 * Constructor
 	 * @return void
 	 */
-	public function __construct($file,$config,$included = FALSE)
+	public function __construct($file, $config, $included = FALSE)
 	{
 		$cfg = $this;
 		$cfg->file = $file;
@@ -127,6 +127,9 @@ class Daemon_ConfigParser {
 								$elTypes[$i] = Daemon_ConfigParser::T_STRING;
 							}
 						}
+						elseif ($c === '}') {
+							$cfg->raiseError('Unexpected \'}\' instead of \';\' or \'{\'');
+						}
 						elseif ($c === ';') {
 							$tokenType = Daemon_ConfigParser::T_VAR;
 							break;
@@ -186,7 +189,7 @@ class Daemon_ConfigParser {
 							$files = glob($path);
 							if ($files) {
 								foreach ($files as $fn) {
-									$parser = new Daemon_ConfigParser($fn,$scope,true);
+									$parser = new Daemon_ConfigParser($fn, $scope, true);
 								}
 							}
 						} elseif (substr(strtolower($elements[0]),0,4) === 'mod-') {
@@ -224,6 +227,7 @@ class Daemon_ConfigParser {
 					elseif ($tokenType === Daemon_ConfigParser::T_BLOCK) {
 						$scope = $cfg->getCurrentScope();
 						$sectionName = implode('-', $elements);
+						$sectionName = strtr($sectionName, '-. ', ':::');
 						if (!isset($scope->{$sectionName})) {
 							$scope->{$sectionName} = new Daemon_ConfigSection;
 						}
@@ -249,10 +253,11 @@ class Daemon_ConfigParser {
 	}
 	
 	/**
-	 * @todo description?
+	 * Removes old config parts after updating.
+	 * @return void
 	 */
 	public function purgeScope($scope) {
-	 $cfg = $this;
+		$cfg = $this;
 		foreach ($scope as $name => $obj) {
 			if ($obj instanceof Daemon_ConfigEntry) {
 					if ($obj->source === 'config' && ($obj->revision < $cfg->revision))	{

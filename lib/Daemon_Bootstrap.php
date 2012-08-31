@@ -66,6 +66,7 @@ class Daemon_Bootstrap {
 	 */
 	public static function init() {
 		Daemon::initSettings();
+		FS::init();
 		Daemon::$runName = basename($_SERVER['argv'][0]);
 
 		$error = FALSE;
@@ -109,6 +110,10 @@ class Daemon_Bootstrap {
 		if (!Daemon::$useSockets) {
 			Daemon::log('Cannot use socket extension, using stream_* instead. Non-critical error, but the performance compromised.');
 		}
+
+		if (extension_loaded('apc') && ini_get('apc.enabled')) {
+			Daemon::log('Detected pecl-apc extension enabled. Please do not use it with phpdaemon to avoid possible fatal error \'Base lambda function for closure not found\' (php bug#52144). Usage of bytecode caching (APC/eAccelerator/xcache/...) in case of phpdaemon makes no sense at all \'cause PHPDaemon includes files just in time itself.');
+		}
 		
 		if (isset(Daemon::$config->locale->value) && Daemon::$config->locale->value !== '') {
 			setlocale(LC_ALL,explode(',', Daemon::$config->locale->value));
@@ -118,8 +123,7 @@ class Daemon_Bootstrap {
 			Daemon::$config->autoreimport->value
 			&& !is_callable('runkit_import')
 		) {
-			Daemon::log('runkit extension not found. You should install it or disable --auto-reimport.');
-			$error = TRUE;
+			Daemon::log('runkit extension not found. You should install it or disable --auto-reimport. Non-critical error.');
 		}
 		
 		if (!is_callable('posix_kill')) {
@@ -243,10 +247,13 @@ class Daemon_Bootstrap {
 				Daemon::$config->minworkers->value = Daemon::$config->maxworkers->value;
 			}
 		}
-		
+
 		if ($runmode == 'start') {
 			if ($error === FALSE) {
 				Daemon_Bootstrap::start();
+			}
+			else {
+				exit(6);
 			}
 		}
 		elseif (
@@ -381,6 +388,7 @@ class Daemon_Bootstrap {
 			
 			echo "\n";
 		}
+		
 	}
 
 	private static function printUsage() {
@@ -390,7 +398,7 @@ class Daemon_Bootstrap {
 	private static function printHelp() {
 		$term = new Terminal();
 
-		echo 'phpDaemon ' . Daemon::$version . ". Made in Russia. http://phpdaemon.net\n";
+		echo 'phpDaemon ' . Daemon::$version . ". http://phpdaemon.net\n";
 
 		self::printUsage();
 
@@ -424,7 +432,7 @@ class Daemon_Bootstrap {
 			&& posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)
 		) {
 			Daemon::log('[START] phpDaemon with pid-file \'' . Daemon::$config->pidfile->value . '\' is running already (PID ' . Daemon_Bootstrap::$pid . ')');
-			exit;
+			exit(6);
 		}
 
 		Daemon::init();
@@ -450,7 +458,7 @@ class Daemon_Bootstrap {
 			$i = 0;
 
 			while ($r = posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)) {
-				usleep(500000);
+				usleep(10000);
 				++$i;
 			}
 		}

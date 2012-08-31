@@ -16,15 +16,16 @@ class Example extends AppInstance {
 	 * Uncomment and return array with your default options
 	 * @return array|false
 	 */
-	//protected function getConfigDefaults() {
-	//	return false;
-	//}
+	protected function getConfigDefaults() {
+		return false;
+	}
 
 	/**
 	 * Constructor.
 	 * @return void
 	 */
-	public function init() { }
+	public function init() {
+	}
 
 	/**
 	 * Called when the worker is ready to go.
@@ -55,13 +56,11 @@ class Example extends AppInstance {
 }
 
 class ExampleRequest extends HTTPRequest {
-
 	/**
 	 * Called when request iterated.
 	 * @return integer Status.
 	 */
 	public function run() {
-		$stime = microtime(TRUE);
 		$this->header('Content-Type: text/html');
 		$this->setcookie('testcookie', '1');
 		$this->registerShutdownFunction(function() {
@@ -80,7 +79,6 @@ Hello world!
 <br />Counter of requests to this Application Instance: <b><?php echo ++$this->appInstance->counter; ?></b>
 <br />Memory usage: <?php $mem = memory_get_usage(); echo ($mem / 1024 / 1024); ?> MB. (<?php echo $mem; ?>)
 <br />Memory real usage: <?php $mem = memory_get_usage(TRUE); echo ($mem / 1024 / 1024); ?> MB. (<?php echo $mem; ?>)
-<br />Pool size: <?php echo sizeof(Daemon::$process->pool); ?>.
 <br />My PID: <?php echo getmypid(); ?>.
 <?php
 $user = posix_getpwuid(posix_getuid());
@@ -127,7 +125,7 @@ if ($displaystate) {
 		'_SERVER' => $_SERVER,
 	));
 ?></pre>
-<br />Request took: <?php printf('%f', round(microtime(TRUE) - $stime, 6)); ?>
+<br />Request took: <?php printf('%f', round(microtime(TRUE) - $_SERVER['REQUEST_TIME_FLOAT'], 6)); ?>
 </body><?php
 	}
 	

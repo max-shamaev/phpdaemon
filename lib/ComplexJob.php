@@ -22,6 +22,9 @@ class ComplexJob {
 			$this->addListener($cb);
 		}
 	}
+	public function hasCompleted() {
+		return $this->state === self::STATE_DONE;
+	}
 
 	public function __call($name, $args) {
 		return call_user_func_array($this->{$name}, $args);
@@ -31,6 +34,10 @@ class ComplexJob {
 		$this->results[$jobname] = $result;
 		++$this->resultsNum;
 		$this->checkIfAllReady();
+	}
+	
+	public function getResult($jobname) {
+		return isset($this->results[$jobname]) ? $this->results[$jobname] : null;
 	}
 	
 	public function checkIfAllReady() {
@@ -49,7 +56,7 @@ class ComplexJob {
 		}
 		$this->jobs[$name] = $cb;
 		++$this->jobsNum;
-		if ($this->state === self::STATE_RUNNING) {
+		if (($this->state === self::STATE_RUNNING) || ($this->state === self::STATE_DONE)) {
 			$cb($name, $this);
 		}
 		return true;
@@ -62,16 +69,23 @@ class ComplexJob {
 	}
 	
 	public function addListener($cb) {
+		if ($this->state === self::STATE_DONE) {
+			$cb($name, $this);
+			return;
+		}
 		$this->listeners[] = $cb;
 	}
 	
 	public function __invoke($name = null, $cb = null) {
 		if (func_num_args() === 0) {
-			$this->state = self::STATE_RUNNING;
-			foreach ($this->jobs as $name => $cb) {
-				$cb($name, $this);
+			if ($this->state === self::STATE_WAITING) {
+				$this->state = self::STATE_RUNNING;
+				foreach ($this->jobs as $name => $cb) {
+					$cb($name, $this);
+					$this->jobs[$name] = null;
+				}
+				$this->checkIfAllReady();
 			}
-			$this->checkIfAllReady();
 			return;
 		}
 		$this->addJob($name, $cb);

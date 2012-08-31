@@ -4,7 +4,7 @@
  * Asynchronous server
  *
  * @package Core
- *
+ * @deprecated (softly)
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
 class AsyncServer extends AppInstance {
@@ -44,10 +44,8 @@ class AsyncServer extends AppInstance {
 			Daemon::log(get_class($this) . '::' . __METHOD__ . ': Couldn\'t set event on binded socket: ' . Debug::dump($sock));
 			return;
 		}
-
 		$k = Daemon::$sockCounter++;
 		Daemon::$sockets[$k] = array($sock, $type, $addr);
-
 		$this->socketEvents[$k] = $ev;
 	}
 	
@@ -255,8 +253,7 @@ class AsyncServer extends AppInstance {
 							continue;
 						}
 
-						if (Daemon::$reusePort)
-						if (!socket_set_option($sock, SOL_SOCKET, SO_REUSEPORT, 1)) {
+						if (Daemon::$reusePort && !socket_set_option($sock, SOL_SOCKET, SO_REUSEPORT, 1)) {
 							$errno = socket_last_error();
 							Daemon::log(get_class($this) . ': Couldn\'t set option REUSEPORT to socket (' . $errno . ' - ' . socket_strerror($errno) . ').');
 
@@ -329,9 +326,12 @@ class AsyncServer extends AppInstance {
 	
 	/**
 	 * Called when remote host is trying to establish the connection
+	 * @param resource Descriptor
+	 * @param integer Events
+	 * @param mixed Attached variable
 	 * @return boolean If true then we can accept new connections, else we can't
 	 */
-	public function checkAccept() {
+	public function checkAccept($stream, $events, $arg) {
 		if (Daemon::$process->reload) {
 			return FALSE;
 		}
@@ -361,13 +361,13 @@ class AsyncServer extends AppInstance {
 		}
 
 		event_buffer_free($this->buf[$connId]);
-
-		if (Daemon::$useSockets) {
-			socket_close(Daemon::$process->pool[$connId]);
-		} else {
-			fclose(Daemon::$process->pool[$connId]);
+		if (isset(Daemon::$process->pool[$connId])) {
+			if (Daemon::$useSockets) {
+				socket_close(Daemon::$process->pool[$connId]);
+			} else {
+				fclose(Daemon::$process->pool[$connId]);
+			}
 		}
-		
 		unset(Daemon::$process->pool[$connId]);
 		unset(Daemon::$process->poolApp[$connId]);
 		unset(Daemon::$process->readPoolState[$connId]);
@@ -505,7 +505,7 @@ class AsyncServer extends AppInstance {
 			Daemon::$process->log(get_class($this) . '::' . __METHOD__ . '(' . $sockId . ') invoked.');
 		}
 		
-		if ($this->checkAccept()) {
+		if ($this->checkAccept($stream, $events, $arg)) {
 			event_add($this->socketEvents[$sockId]);
 		}
 		

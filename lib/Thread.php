@@ -125,7 +125,7 @@ abstract class Thread {
 	 * Run thread process
 	 * @return void
 	 */
-	protected function run() { }
+	public function run() { }
 
 	/**
 	 * @todo Add a description
@@ -157,26 +157,28 @@ abstract class Thread {
 	 * Starts the process
 	 * @return void
 	 */
-	public function start() {
+	public function start($clearstack = false) {
 		$pid = pcntl_fork();
 
 		if ($pid === -1) {
 			throw new Exception('Could not fork');
 		} 
-		elseif ($pid == 0) {
-			$this->pid = posix_getpid();
-
-			if (!$this->delayedSigReg) {
-				$this->registerSignals();
+		elseif ($pid === 0) { // we are the child
+			$thread = $this;
+			$thread->pid = posix_getpid();
+			if (!$thread->delayedSigReg) {
+				$thread->registerSignals();
 			}
-
-			$this->run();
-			$this->shutdown();
+			if ($clearstack) {
+				throw new ClearStackException('', 0, $thread);
+			} else {
+				$thread->run();
+				$thread->shutdown();
+			}
+		} else { // we are the master
+			$this->pid = $pid;
+			return $pid;
 		}
-
-		$this->pid = $pid;
-
-		return $pid;
 	}
 
 	/**
@@ -316,14 +318,13 @@ abstract class Thread {
 	 * Waits until children is alive
 	 * @return void
 	 */
-	protected function waitAll() {
+	protected function waitAll($check) {
 		do {
 			$n = 0;
 
 			foreach ($this->collections as &$col) {
-				$n += $col->removeTerminated();
+				$n += $col->removeTerminated($check);
 			}
-
 			if (!$this->waitPid()) {
 				$this->sigwait(0, 20000);
 			}

@@ -12,6 +12,7 @@ class Daemon {
 	const SUPPORT_RUNKIT_SANDBOX         = 0;	
 	const SUPPORT_RUNKIT_MODIFY          = 1;
 	const SUPPORT_RUNKIT_INTERNAL_MODIFY = 2;
+	const SUPPORT_RUNKIT_IMPORT 		 = 3;
 
 	/**
 	 * PHPDaemon version
@@ -29,7 +30,9 @@ class Daemon {
 	 * Log file resource
 	 * @var resource
 	 */
-	private static $logpointer;
+	public static $logpointer;
+
+	public static $logpointerAsync;
 	
 	/**	
 	 * Supported things array	
@@ -55,6 +58,7 @@ class Daemon {
 	public static $runName = 'phpdaemon';
 	public static $config;
 
+	public static $obInStack = false; // whether if the current execution stack contains ob-filter
 	/**
 	 * Loads default setting.
 	 * @return void
@@ -81,6 +85,8 @@ class Daemon {
 	 * @return string - buffer
 	 */
 	public static function outputFilter($s) {
+		static $n = 0; // recursion counter
+		
 		if ($s === '') {
 			return '';
 		}
@@ -89,7 +95,11 @@ class Daemon {
 			Daemon::$config->obfilterauto->value
 			&& (Daemon::$req !== NULL)
 		) {
-			Daemon::$req->out($s,FALSE);
+			++$n;
+			Daemon::$obInStack = true;
+			Daemon::$req->out($s, false);
+			--$n;
+			Daemon::$obInStack = $n > 0;
 		} else {
 			Daemon::log('Unexcepted output (len. ' . strlen($s) . '): \'' . $s . '\'');
 		}
@@ -131,18 +141,22 @@ class Daemon {
 	 */
 	private static function checkSupports() {
 		if (is_callable('runkit_lint_file')) {
-			self::$support[self::SUPPORT_RUNKIT_SANDBOX] = 1;
+			self::$support[self::SUPPORT_RUNKIT_SANDBOX] = true;
 		}
 
 		if (is_callable('runkit_function_add')) {
-			self::$support[self::SUPPORT_RUNKIT_MODIFY] = 1;
+			self::$support[self::SUPPORT_RUNKIT_MODIFY] = true;
+		}
+		
+		if (is_callable('runkit_import')) {
+			self::$support[self::SUPPORT_RUNKIT_IMPORT] = true;
 		}
 		
 		if (
 			self::supported(self::SUPPORT_RUNKIT_MODIFY)
 			&& ini_get('runkit.internal_override')
 		) {		
-			self::$support[self::SUPPORT_RUNKIT_INTERNAL_MODIFY] = 1;
+			self::$support[self::SUPPORT_RUNKIT_INTERNAL_MODIFY] = true;
 		}
 	}
 
@@ -262,25 +276,29 @@ class Daemon {
 	}
 
 	/**
-	 * Open log descriptors.
+	 * Open logs.
 	 * @return void
 	 */
 	public static function openLogs() {
 		if (Daemon::$config->logging->value) {
-			if (Daemon::$logpointer) {
-				fclose(Daemon::$logpointer);
-				Daemon::$logpointer = FALSE;
-			}
-
-			Daemon::$logpointer = fopen(Daemon::$config->logstorage->value, 'a+');
-
+			Daemon::$logpointer = fopen(Daemon::$config->logstorage->value, 'a');
 			if (isset(Daemon::$config->group->value)) {
-				chgrp(Daemon::$config->logstorage->value, Daemon::$config->group->value);
+				chgrp(Daemon::$config->logstorage->value, Daemon::$config->group->value); // @TODO: rewrite to async I/O
 			}
-
 			if (isset(Daemon::$config->user->value)) {
-				chown(Daemon::$config->logstorage->value, Daemon::$config->user->value);
+				chown(Daemon::$config->logstorage->value, Daemon::$config->user->value); // @TODO: rewrite to async I/O
 			}
+			if ((Daemon::$process instanceof Daemon_WorkerThread) && FS::$supported) {
+				FS::open(Daemon::$config->logstorage->value, 'a!', function ($file) {
+					Daemon::$logpointerAsync = $file;
+					if (!$file) {
+						return;
+					}
+				});
+			}
+		} else {
+			Daemon::$logpointer = null;
+			Daemon::$logpointerAsync = null;
 		}
 	}
 
@@ -288,11 +306,11 @@ class Daemon {
 	 * Get state of workers.
 	 * @return array - information.
 	 */
+	// @TODO: get rid of magic numbers in status (use constants)
 	public static function getStateOfWorkers($master = NULL) {
 		static $bufsize = 1024;
-
 		$offset = 0;
-
+		
 		$stat = array(
 			'idle'     => 0,
 			'busy'     => 0,
@@ -429,9 +447,12 @@ class Daemon {
 		) {
 			fwrite(STDERR, '[PHPD] ' . $msg . "\n");
 		}
-
-		if (Daemon::$logpointer) {
-			fwrite(Daemon::$logpointer, '[' . date('D, j M Y H:i:s', $mt[1]) . '.' . sprintf('%06d', $mt[0]*1000000) . ' ' . date('O') . '] ' . $msg . "\n");
+		
+		$msg = '[' . date('D, j M Y H:i:s', $mt[1]) . '.' . sprintf('%06d', $mt[0]*1000000) . ' ' . date('O') . '] ' . $msg . "\n";
+		if (Daemon::$logpointerAsync) {
+			Daemon::$logpointerAsync->write($msg);
+		} elseif (Daemon::$logpointer) {
+			fwrite(Daemon::$logpointer, $msg);
 		}
 	}
 

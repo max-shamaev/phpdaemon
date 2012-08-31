@@ -3,17 +3,24 @@
 user nobody;
 group nobody;
 
-max-workers	20;
-min-workers	20;
-start-workers	20;
-
-max-requests	1m;
+max-workers	8;
+min-workers	8;
+start-workers	8;
 max-idle	0;
 
-FastCGI {
-	privileged;
-
+Pool:FastCGIServer {
 	# you can redefine default settings for FastCGI
+}
+
+#Pool:HTTPServer {
+	# you can redefine default settings for FastCGI
+#}
+
+Pool:WebSocketServer {
+}
+
+Example {
+	# config of your application Example
 }
 
 # other applications...

@@ -15,24 +15,11 @@ class Daemon_WorkerThread extends Thread {
 	private $reloadDelay = 2;
 	public $reloaded = FALSE;
 
-
-	/**
-	 * Worker's connnections (FDs) pool
-	 * @var string
-	 */
-	public $pool = array();
-
 	/**
 	 * Map connnection id to application which created this connection
 	 * @var string
 	 */
-	public $poolApp = array();
-	public $connCounter = 0;
-	public $reqCounter = 0;
-	public $queue = array();
-	public $timeLastReq = 0;
-	public $readPoolState = array();
-	public $writePoolState = array();
+	public $timeLastActivity = 0;
 	private $autoReloadLast = 0;
 	private $currentStatus = 0;
 	public $eventBase;
@@ -49,8 +36,14 @@ class Daemon_WorkerThread extends Thread {
 	 * Runtime of Worker process.
 	 * @return void
 	 */
-	protected function run() {
+	public function run() {
+		FS::init();
 		Daemon::$process = $this;
+		if (Daemon::$logpointerAsync) {
+			$oldfd = Daemon::$logpointerAsync->fd;
+			Daemon::$logpointerAsync->fd = null;
+			Daemon::$logpointerAsync = null;
+		}
 		$this->autoReloadLast = time();
 		$this->reloadDelay = Daemon::$config->mpmdelay->value + 2;
 		$this->setStatus(4);
@@ -68,6 +61,10 @@ class Daemon_WorkerThread extends Thread {
 		$this->eventBase = event_base_new();
 		$this->registerEventSignals();
 
+		FS::init(); // re-init
+		FS::initEvent();
+		Daemon::openLogs();
+
 		$this->fileWatcher = new FileWatcher;
 
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
@@ -84,32 +81,7 @@ class Daemon_WorkerThread extends Thread {
 
 		$this->setStatus(1);
 
-		/**
-		 * @closure readPoolEvent
-		 * @description Invokes the AppInstance->readConn() method for every updated connection in pool. readConn() reads new data from the buffer.
-		 * @return void
-		 */
-		$this->readPoolEvent = Daemon_TimedEvent::add(function($event) {
-			$self = Daemon::$process;
-
-			foreach ($self->readPoolState as $connId => $state) {
-				if (Daemon::$config->logevents->value) {
-					$self->log('event readConn(' . $connId . ') invoked.');
-				}
-
-				$self->poolApp[$connId]->readConn($connId);
-
-				if (Daemon::$config->logevents->value) {
-					$self->log('event readConn(' . $connId . ') finished.');
-				}
-			}
-
-			if (sizeof($self->readPoolState) > 0) {
-				$event->timeout();
-			}
-		}, 1e6 * 0.005, 'readPoolEvent');
-
-		Daemon_TimedEvent::add(function($event) {
+		Timer::add(function($event) {
 			$self = Daemon::$process;
 
 			if ($self->checkState() !== TRUE) {
@@ -120,25 +92,23 @@ class Daemon_WorkerThread extends Thread {
 			}
 
 			$event->timeout();
-		}, 1e6 * 1,	'checkStateTimedEvent');
-
+		}, 1e6 * 1,	'checkState');
 		if (Daemon::$config->autoreload->value > 0) {
-			Daemon_TimedEvent::add(function($event) {
+			Timer::add(function($event) {
 				$self = Daemon::$process;
 
 				static $n = 0;
 
-				$inc = array_unique(array_map('realpath',get_included_files()));
+				$inc = array_unique(array_map('realpath', get_included_files()));
 				$s = sizeof($inc);
 				if ($s > $n) {
-					$slice = array_slice($inc,$n);
+					$slice = array_slice($inc, $n);
 					Daemon::$process->IPCManager->sendPacket(array('op' => 'addIncludedFiles', 'files' => $slice));
 					$n = $s;
 				}
 				$event->timeout();
-			}, 1e6 * Daemon::$config->autoreload->value, 'watchIncludedFilesTimedEvent');
+			}, 1e6 * Daemon::$config->autoreload->value, 'watchIncludedFiles');
 		}
-
 
 		while (!$this->breakMainLoop) {
 			event_base_loop($this->eventBase);
@@ -220,8 +190,6 @@ class Daemon_WorkerThread extends Thread {
 				}
 			}
 
-			register_shutdown_function(array($this,'shutdown'));
-
 			runkit_function_rename('register_shutdown_function', 'register_shutdown_function_native');
 
 			function register_shutdown_function($cb) {
@@ -273,7 +241,9 @@ class Daemon_WorkerThread extends Thread {
 	 */
 	public function prepareSystemEnv() {
 		proc_nice(Daemon::$config->workerpriority->value);
-
+		
+		register_shutdown_function(array($this,'shutdown'));
+		
 		$this->setproctitle(
 			Daemon::$runName . ': worker process'
 			. (Daemon::$config->pidfile->value !== Daemon::$config->defaultpidfile->value
@@ -348,21 +318,22 @@ class Daemon_WorkerThread extends Thread {
 	 * @return void
 	 */
 	public function closeSockets() {
-		foreach (Daemon::$socketEvents as $k => $ev) {
-			event_del($ev);
-			event_free($ev);
-
-			unset($this->socketEvents[$k]);
-		}
-
-		foreach (Daemon::$sockets as $k => &$s) {
-			if (Daemon::$useSockets) {
-				socket_close($s[0]);
-			} else {
-				fclose($s[0]);
+		for (;sizeof(Daemon::$socketEvents);) {
+			if (!is_resource($ev = array_pop(Daemon::$socketEvents))) {
+				continue;
 			}
-
-			unset(Daemon::$sockets[$k]);
+			@event_del($ev); // bogus notice
+			event_free($ev);
+		}
+		for (;sizeof(Daemon::$sockets);) {
+			if (!$sock = array_pop(Daemon::$sockets)) {
+				continue;
+			}
+			if (Daemon::$useSockets) {
+				socket_close($sock[0]);
+			} else {
+				fclose($sock[0]);
+			}
 		}
 	}
 
@@ -371,6 +342,7 @@ class Daemon_WorkerThread extends Thread {
 	 * @return void
 	 */
 	private function update() {
+		FS::updateConfig();
 		foreach (Daemon::$appInstances as $k => $app) {
 			foreach ($app as $appInstance) {
 				$appInstance->handleStatus(2);
@@ -393,18 +365,6 @@ class Daemon_WorkerThread extends Thread {
 		}
 
 		if (
-			Daemon::$config->maxrequests->value
-			&& ($this->reqCounter >= Daemon::$config->maxrequests->value)
-		) {
-			$this->log('\'maxrequests\' exceed. Graceful shutdown.');
-
-			$this->reload = TRUE;
-			$this->reloadTime = $time + $this->reloadDelay;
-			$this->setStatus($this->currentStatus);
-			$this->status = 3;
-		}
-
-		if (
 			(Daemon::$config->maxmemoryusage->value > 0)
 			&& (memory_get_usage(TRUE) > Daemon::$config->maxmemoryusage->value)
 		) {
@@ -418,8 +378,8 @@ class Daemon_WorkerThread extends Thread {
 
 		if (
 			Daemon::$config->maxidle->value
-			&& $this->timeLastReq
-			&& ($time - $this->timeLastReq > Daemon::$config->maxidle->value)
+			&& $this->timeLastActivity
+			&& ($time - $this->timeLastActivity > Daemon::$config->maxidle->value)
 		) {
 			$this->log('\'maxworkeridle\' exceed. Graceful shutdown.');
 
@@ -483,6 +443,13 @@ class Daemon_WorkerThread extends Thread {
 	 * @return boolean - Ready?
 	 */
 	public function shutdown($hard = FALSE) {
+		$error = error_get_last(); 
+		if ($error) {
+			if ($error['type'] === E_ERROR) {
+				Daemon::log('W#' . $this->pid . ' crashed by error \''.$error['message'].'\' at '.$error['file'].':'.$error['line']);
+			}
+
+		}
 		if (Daemon::$config->logevents->value) {
 			$this->log('event shutdown(' . ($hard ? 'HARD' : '') . ') invoked.');
 		}
@@ -519,21 +486,11 @@ class Daemon_WorkerThread extends Thread {
 			$this->log('reloadReady = ' . Debug::dump($this->reloadReady));
 		}
 
-		foreach ($this->queue as $r) {
-			if ($r instanceof stdClass) {
-				continue;
-			}
-
-			if ($r->running) {
-				$r->finish(-2);
-			}
-		}
-
 		$n = 0;
 
-		unset($this->timeouts['checkStateTimedEvent']);
+		unset(Timer::$list['checkState']);
 
-		Daemon_TimedEvent::add(function($event) 	{
+		Timer::add(function($event) 	{
 			$self = Daemon::$process;
 
 			$self->reloadReady = $self->appInstancesReloadReady();
@@ -552,9 +509,9 @@ class Daemon_WorkerThread extends Thread {
 		while (!$this->reloadReady) {
 			event_base_loop($this->eventBase);
 		}
-
-		posix_kill(posix_getppid(), SIGCHLD);
-		exit(0);
+		//FS::waitAllEvents(); // ensure that all I/O events completed before suicide
+		posix_kill(posix_getppid(), SIGCHLD); // praying to Master
+		exit(0); // R.I.P.
 	}
 
 	/**
@@ -665,7 +622,7 @@ class Daemon_WorkerThread extends Thread {
 	public function sigttin() { }
 
 	/**
-	 * Handler of the SIGXSFZ ignal in worker process.
+	 * Handler of the SIGXSFZ signal in worker process.
 	 * @return void
 	 */
 	public function sigxfsz() {

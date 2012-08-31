@@ -14,20 +14,23 @@ class Daemon_MasterThread extends Thread {
 	public $reload = FALSE;
 	public $connCounter = 0;
 	public $fileWatcher;
+	public $callbacks;
 	
 	/**
 	 * Runtime of Master process
 	 * @return void
 	 */
-	protected function run() {
+	public function run() {
 		Daemon::$process = $this;
 		
 		$this->prepareSystemEnv();
+		class_exists('Timer'); // ensure loading this class
 		
 		gc_enable();
 		
 		$this->eventBase = event_base_new();
 		$this->registerEventSignals();
+		FS::initEvent();
 
 		$this->fileWatcher = new FileWatcher;
 		$this->workers = new ThreadCollection;
@@ -37,12 +40,12 @@ class Daemon_MasterThread extends Thread {
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
 		Daemon::$appResolver->preload(true); 
 
+		$this->callbacks = new SplStack;
 		$this->spawnWorkers(min(
 			Daemon::$config->startworkers->value,
 			Daemon::$config->maxworkers->value
 		));
-				
-		Daemon_TimedEvent::add(function($event) {
+		Timer::add(function($event) use (&$cbs) {
 			$self = Daemon::$process;
 
 			static $c = 0;
@@ -81,6 +84,7 @@ class Daemon_MasterThread extends Thread {
 					if ($n > 0) {
 						Daemon::log('Spawning ' . $n . ' worker(s).');
 						$self->spawnWorkers($n);
+						event_base_loopbreak($self->eventBase);
 					}
 
 					$n = min(
@@ -97,11 +101,14 @@ class Daemon_MasterThread extends Thread {
 			
 			
 			$event->timeout();
-		}, 1e6 * Daemon::$config->mpmdelay->value, 'MPMTimedEvent');
+		}, 1e6 * Daemon::$config->mpmdelay->value, 'MPM');
 		
 		
 
 		while (!$this->breakMainLoop) {
+			while (!$this->callbacks->isEmpty()) {
+				call_user_func($this->callbacks->shift(), $this);
+			}
 			event_base_loop($this->eventBase);
 		}
 	}
@@ -112,7 +119,7 @@ class Daemon_MasterThread extends Thread {
 		foreach (Daemon::$config as $name => $section)
 		{
 		 if (
-					(!$section instanceof Daemon_ConfigSection)
+			(!$section instanceof Daemon_ConfigSection)
 			|| !isset($section->limitinstances)) {
 			
 				continue;
@@ -179,8 +186,7 @@ class Daemon_MasterThread extends Thread {
 		if (isset($this->workers->threads[$spawnId])) {
 			if (!$this->workers->threads[$spawnId]->reloaded) {
 				Daemon::log('Spawning worker-replacer for reloaded worker #' . $spawnId . '.');
-			
-				$this->spawnWorkers();
+				$this->spawnWorkers(1);
 				$this->workers->threads[$spawnId]->reloaded = true;
 			}
 		}
@@ -191,16 +197,26 @@ class Daemon_MasterThread extends Thread {
 	 * @param $n - integer - number of workers to spawn
 	 * @return boolean - success
 	 */
-	public function spawnWorkers($n = 1) {
+	public function spawnWorkers($n) {
+		if (FS::$supported) {
+			eio_event_loop();
+		}
 		$n = (int) $n;
 	
 		for ($i = 0; $i < $n; ++$i) {
 			$thread = new Daemon_WorkerThread;
 			$this->workers->push($thread);
 
-			if (-1 === $thread->start()) {
-				Daemon::log('could not start worker');
-			}
+			$this->callbacks->push(function($self) use ($thread) {
+				$pid = $thread->start();
+				if ($pid < 0) {
+					Daemon::log('could not fork worker');
+				} elseif ($pid === 0) { // worker
+					Daemon::log('Unexcepted execution return to outside of Thread_start()');
+					exit;
+				}
+			});
+
 		}
 
 		return true;
@@ -257,7 +273,7 @@ class Daemon_MasterThread extends Thread {
 	 */
 	public function shutdown($signo = false) {
 		$this->shutdown = true;
-		$this->waitAll($signo);
+		$this->waitAll(true);
 
 		if (Daemon::$shm_wstate) {
 			shmop_delete(Daemon::$shm_wstate);
